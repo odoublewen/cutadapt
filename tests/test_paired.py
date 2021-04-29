@@ -137,6 +137,7 @@ def test_missing_file(tmpdir):
         main(["--paired-output", str(tmpdir.join("out.fastq")), datapath("paired.1.fastq")])
 
 
+@pytest.mark.timeout(0.5)
 def test_first_too_short(tmpdir, cores):
     # Create a truncated file in which the last read is missing
     trunc1 = tmpdir.join("truncated.1.fastq")

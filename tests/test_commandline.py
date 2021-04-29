@@ -826,3 +826,13 @@ def test_terminates_correctly_on_error_in_subprocess(tmp_path):
     ]
     with pytest.raises(SystemExit):
         main(params)
+
+
+def test_input_file_does_not_exist(tmp_path, cores):
+    params = [
+        "-j", str(cores),
+        "-o", str(tmp_path / "out.fastq"),
+        datapath("does-not-exist.fastq"),
+    ]
+    with pytest.raises(SystemExit):
+        main(params)

@@ -4,7 +4,7 @@ import sys
 import copy
 import logging
 import functools
-from queue import Empty
+from queue import Empty, Full
 from typing import List, Optional, BinaryIO, TextIO, Any, Tuple, Dict, Sequence
 from abc import ABC, abstractmethod
 from multiprocessing import Process, Pipe, Queue, Event
@@ -518,6 +518,10 @@ class PairedEndPipeline(Pipeline):
         self._maximum_length = value
 
 
+class Cancel(Exception):
+    pass
+
+
 class ReaderProcess(Process):
     """
     Read chunks of FASTA or FASTQ data (single-end or paired) and send them to a worker.
@@ -568,17 +572,17 @@ class ReaderProcess(Process):
                         for chunk_index, (chunk1, chunk2) in enumerate(
                                 dnaio.read_paired_chunks(f, f2, self.buffer_size)):
                             self.send_to_worker(chunk_index, chunk1, chunk2)
-                            if self._shutdown_event.is_set():
-                                break
                 else:
                     for chunk_index, chunk in enumerate(dnaio.read_chunks(f, self.buffer_size)):
                         self.send_to_worker(chunk_index, chunk)
-                        if self._shutdown_event.is_set():
-                            break
             self.shutdown()
+        except Cancel:
+            # TODO Does anything else need to be done here?
+            logger.debug("ReaderProcess was requested to shut down")
         except Exception as e:
-            # TODO better send this to a common "something went wrong" Queue
             logger.debug("Exception in ReaderProcess: %s", e)
+            # TODO This should be sent to the main process, not to the workers (because they
+            # may not be running anymore)
             for connection in self.connections:
                 connection.send(-2)
                 connection.send((e, traceback.format_exc()))
@@ -586,18 +590,27 @@ class ReaderProcess(Process):
     def shutdown(self):
         # Send poison pills to all workers
         sent = len(self.connections)
-        while sent > 0 and not self._shutdown_event.is_set():
-            try:
-                worker_index = self.queue.get(block=True, timeout=2)
-            except Empty:
-                assert False
-                continue
-            # This could block, but shouldn’t because we send only a few, small objects
+        while sent > 0:
+            worker_index = self.get_next_worker_index()
+            # This could block, but hopefully doesn’t because it’s just an int
             self.connections[worker_index].send(-1)
             sent -= 1
 
+    def get_next_worker_index(self):
+        """
+        Get index of next worker that is ready to receive work.
+        Return None if shutting down.
+        """
+        while not self._shutdown_event.is_set():
+            try:
+                worker_index = self.queue.get(block=True, timeout=0.01)
+            except Empty:
+                continue
+            return worker_index
+        raise Cancel
+
     def send_to_worker(self, chunk_index, chunk1, chunk2=None):
-        worker_index = self.queue.get()
+        worker_index = self.get_next_worker_index()
         connection = self.connections[worker_index]
         connection.send(chunk_index)
         connection.send_bytes(chunk1)
@@ -623,6 +636,7 @@ class WorkerProcess(Process):
         read_pipe: Connection,
         write_pipe: Connection,
         need_work_queue: Queue,
+        shutdown_event,
     ):
         super().__init__()
         self._id = id_
@@ -635,13 +649,13 @@ class WorkerProcess(Process):
         # Do not store orig_outfiles directly because it contains
         # _io.BufferedWriter attributes, which cannot be pickled.
         self._original_outfiles = orig_outfiles.as_bytesio()
+        self._shutdown_event = shutdown_event
 
     def run(self):
         try:
             stats = Statistics()
             while True:
-                # Notify reader that we need data
-                self._need_work_queue.put(self._id)
+                self._request_work()
                 chunk_index = self._read_pipe.recv()
                 if chunk_index == -1:
                     # reader is done
@@ -667,10 +681,22 @@ class WorkerProcess(Process):
             stats += modifier_stats
             self._write_pipe.send(-1)
             self._write_pipe.send(stats)
+        except Cancel:
+            pass
         except Exception as e:
             logger.debug("Exception in WorkerProcess: %s", e)
             self._write_pipe.send(-2)
             self._write_pipe.send((e, traceback.format_exc()))
+
+    def _request_work(self):
+        """Notify reader process that we are ready to receive data"""
+        while not self._shutdown_event.is_set():
+            try:
+                self._need_work_queue.put(self._id, block=True, timeout=0.01)
+            except Full:
+                continue
+            return
+        raise Cancel
 
     def _make_input_files(self) -> InputFiles:
         data = self._read_pipe.recv_bytes()
@@ -780,6 +806,7 @@ class ParallelPipelineRunner(PipelineRunner):
         self._buffer_size = buffer_size
         self._outfiles = outfiles
         self._opener = opener
+        self._shutdown_event = Event()
         self._assign_input(infiles.path1, infiles.path2, infiles.interleaved)
 
     def _assign_input(
@@ -799,7 +826,6 @@ class ParallelPipelineRunner(PipelineRunner):
             # This happens during tests: pytest sets sys.stdin to an object
             # that does not have a file descriptor.
             fileno = -1
-        self._shutdown_event = Event()
         self._reader_process = ReaderProcess(path1, path2, self._opener, connw,
             self._need_work_queue, self._shutdown_event, self._buffer_size, fileno)
         self._reader_process.daemon = True
@@ -814,8 +840,13 @@ class ParallelPipelineRunner(PipelineRunner):
             worker = WorkerProcess(
                 index, self._pipeline,
                 self._two_input_files,
-                self._interleaved_input, self._outfiles,
-                self._connections[index], conn_w, self._need_work_queue)
+                self._interleaved_input,
+                self._outfiles,
+                self._connections[index],
+                conn_w,
+                self._need_work_queue,
+                self._shutdown_event,
+            )
             worker.daemon = True
             worker.start()
             workers.append(worker)
@@ -874,6 +905,17 @@ class ParallelPipelineRunner(PipelineRunner):
             logger.debug("Joining workers")
             for w in workers:
                 w.join()
+            logger.debug("Flushing queue")
+            logger.debug("Queue size: %s", self._need_work_queue.qsize())
+            while True:
+                try:
+                    logger.debug("getting")
+                    self._need_work_queue.get(block=False, timeout=0.01)
+                except Empty:
+                    logger.debug("queue empty")
+                    break
+            self._need_work_queue.close()
+            self._need_work_queue.join_thread()
             logger.debug("Joining reader process")
             self._reader_process.join()
         return stats
