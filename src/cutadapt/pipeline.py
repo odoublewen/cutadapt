@@ -588,8 +588,9 @@ class ReaderProcess(Process):
         sent = len(self.connections)
         while sent > 0 and not self._shutdown_event.is_set():
             try:
-                worker_index = self.queue.get(block=True, timeout=0.1)
+                worker_index = self.queue.get(block=True, timeout=2)
             except Empty:
+                assert False
                 continue
             # This could block, but shouldn’t because we send only a few, small objects
             self.connections[worker_index].send(-1)
