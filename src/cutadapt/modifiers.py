@@ -522,7 +522,7 @@ class Renamer(SingleEndModifier):
 
     - {header} -- full, unchanged header
     - {id} -- the part of the header before the first whitespace
-    - {comment} -- the part of the header after the ID, excluding initial whitespace
+    - {comment} -- the part of the header after the ID, excluding the directly following whitespace
     - {cut_prefix} -- prefix removed by UnconditionalCutter (with positive length argument)
     - {cut_suffix} -- suffix removed by UnconditionalCutter (with negative length argument)
     - {adapter_name} -- name of the *last* adapter match or no_adapter if there was none
@@ -632,6 +632,7 @@ class PairedEndRenamer(PairedEndModifier):
             raise InvalidTemplate(f"Error in template '{template}': {e}")
         Renamer.raise_if_invalid_variable(self._tokens, self._get_allowed_variables())
         self._template = template
+        self._rename = self.compile_rename_function()
 
     @staticmethod
     def _get_allowed_variables() -> Set[str]:
@@ -667,6 +668,40 @@ class PairedEndRenamer(PairedEndModifier):
         read1.name = name1
         read2.name = name2
         return read1, read2
+
+    def compile_rename_function(self):
+        """
+        Create the function that computes a new name
+
+        By creating the code dynamically, we can ensure that only those placeholder values are
+        computed that are actually used in the template.
+        """
+        code = {
+            "header": "read.name",
+            "id": "id_",
+            "comment": "comment",
+            "cut_prefix": "info.cut_prefix if info.cut_prefix else ''",
+            "cut_suffix": "info.cut_suffix if info.cut_suffix else ''",
+            "adapter_name": "info.matches[-1].adapter.name if info.matches else 'no_adapter'",
+            "rc": "'rc' if info.is_rc else ''",
+            "match_sequence": "info.matches[-1].match_sequence() if info.matches else ''",
+        }
+        placeholders = set(
+            token.value for token in self._tokens if isinstance(token, BraceToken)
+        )
+        lines = ["def rename(self, read1, read2, info1, info2):"]
+
+        if "id" in placeholders or "header" in placeholders:
+            lines.append("  id_, comment = self.parse_name(read.name)")
+        lines.append("  return self._template.format(")
+        for placeholder in placeholders:
+            lines.append(f"    {placeholder}={code[placeholder]},")
+        lines.append("  )")
+
+        logger.debug("Generated code of rename function:\n%s", "\n".join(lines))
+        namespace = dict()
+        exec("\n".join(lines), namespace)
+        return namespace["rename"]
 
     def _rename(
         self,
