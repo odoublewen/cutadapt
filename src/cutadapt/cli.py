@@ -103,7 +103,7 @@ from cutadapt.predicates import (
 from cutadapt.report import full_report, minimal_report, Statistics
 from cutadapt.pipeline import SingleEndPipeline, PairedEndPipeline
 from cutadapt.runners import make_runner
-from cutadapt.files import InputPaths, OutputFiles, FileOpener
+from cutadapt.files import InputPaths, OutputFiles, FileOpener, FileFormat
 from cutadapt.steps import (
     InfoFileWriter,
     PairedSingleEndStep,
@@ -111,6 +111,8 @@ from cutadapt.steps import (
     WildcardFileWriter,
     SingleEndFilter,
     PairedEndFilter,
+    Demultiplexer,
+    CombinatorialDemultiplexer,
 )
 from cutadapt.utils import available_cpu_count, Progress, DummyProgress
 from cutadapt.log import setup_logging, REPORT
@@ -456,11 +458,10 @@ def parse_lengths(s: str) -> Tuple[Optional[int], ...]:
 
 def open_output_files(
     args,
-    default_outfile,
     file_opener: FileOpener,
-    adapter_names: Sequence[Optional[str]],
-    adapter_names2: Sequence[Optional[str]],
     proxied: bool,
+    input_file_format: FileFormat,
+    interleaved: bool,
 ) -> OutputFiles:
     """
     Return an OutputFiles instance. If demultiplex is True, the untrimmed, untrimmed2, out and out2
@@ -482,83 +483,12 @@ def open_output_files(
         ]
     )
 
-    if (
-        int(args.discard_trimmed)
-        + int(args.discard_untrimmed)
-        + int(args.untrimmed_output is not None)
-        > 1
-    ):
-        raise CommandLineError(
-            "Only one of the --discard-trimmed, --discard-untrimmed "
-            "and --untrimmed-output options can be used at the same time."
-        )
-
-    demultiplex_mode = determine_demultiplex_mode(args.output, args.paired_output)
-    if demultiplex_mode and args.discard_trimmed:
-        raise CommandLineError("Do not use --discard-trimmed when demultiplexing.")
-    if demultiplex_mode == "combinatorial" and args.pair_adapters:
-        raise CommandLineError(
-            "With --pair-adapters, you can only use {name} in your output file name template, "
-            "not {name1} and {name2} (no combinatorial demultiplexing)."
-        )
-    if demultiplex_mode == "normal":
-        out = out2 = None
-        combinatorial_out = combinatorial_out2 = None
-        (
-            demultiplex_out,
-            demultiplex_out2,
-            untrimmed,
-            untrimmed2,
-        ) = open_demultiplex_out(
-            adapter_names,  # type: ignore
-            args.output,
-            args.paired_output,
-            args.untrimmed_output,
-            args.untrimmed_paired_output,
-            args.discard_untrimmed,
-            file_opener,
-        )
-    elif demultiplex_mode == "combinatorial":
-        assert "{name1}" in args.output and "{name2}" in args.output
-        assert "{name1}" in args.paired_output and "{name2}" in args.paired_output
-        if args.untrimmed_output or args.untrimmed_paired_output:
-            raise CommandLineError(
-                "Combinatorial demultiplexing (with {name1} and {name2})"
-                " cannot be combined with --untrimmed-output or --untrimmed-paired-output"
-            )
-        out = out2 = None
-        demultiplex_out = demultiplex_out2 = None
-        untrimmed = untrimmed2 = None
-        (combinatorial_out, combinatorial_out2) = open_combinatorial_out(
-            adapter_names,  # type: ignore
-            adapter_names2,  # type: ignore
-            args.output,
-            args.paired_output,
-            args.discard_untrimmed,
-            file_opener,
-        )  # type: ignore
-    else:
-        combinatorial_out = combinatorial_out2 = None
-        demultiplex_out = demultiplex_out2 = None
-        untrimmed, untrimmed2 = file_opener.xopen_pair(
-            args.untrimmed_output, args.untrimmed_paired_output, "wb"
-        )
-        out, out2 = file_opener.xopen_pair(args.output, args.paired_output, "wb")
-        if out is None:
-            out = default_outfile
-
     return OutputFiles(
         file_opener=file_opener,
         proxied=proxied,
-        untrimmed=untrimmed,
-        untrimmed2=untrimmed2,
-        out=out,
-        out2=out2,
-        demultiplex_out=demultiplex_out,
-        demultiplex_out2=demultiplex_out2,
-        combinatorial_out=combinatorial_out,
-        combinatorial_out2=combinatorial_out2,
         force_fasta=args.fasta,
+        qualities=input_file_format.has_qualities(),
+        interleaved=interleaved,
     )
 
 
@@ -580,75 +510,6 @@ def complain_about_duplicate_paths(paths: List[str]):
                 f"This is not supported at the moment."
             )
         seen.add(path)
-
-
-def open_combinatorial_out(
-    adapter_names: Iterable[str],
-    adapter_names2: Iterable[str],
-    output_template: str,
-    paired_output_template: str,
-    discard_untrimmed: bool,
-    file_opener,
-):
-    combinatorial_out = dict()
-    combinatorial_out2 = dict()
-    extra: List[Tuple[Optional[str], Optional[str]]]
-    if discard_untrimmed:
-        extra = []
-    else:
-        extra = [(None, None)]
-        extra += [(None, name2) for name2 in adapter_names2]
-        extra += [(name1, None) for name1 in adapter_names]
-    for name1, name2 in list(itertools.product(adapter_names, adapter_names2)) + extra:  # type: ignore
-        fname1 = name1 if name1 is not None else "unknown"
-        fname2 = name2 if name2 is not None else "unknown"
-        path1 = output_template.replace("{name1}", fname1).replace("{name2}", fname2)
-        path2 = paired_output_template.replace("{name1}", fname1).replace(
-            "{name2}", fname2
-        )
-        combinatorial_out[(name1, name2)] = file_opener.xopen(path1, "wb")
-        combinatorial_out2[(name1, name2)] = file_opener.xopen(path2, "wb")
-    return combinatorial_out, combinatorial_out2
-
-
-def open_demultiplex_out(
-    adapter_names: Sequence[str],
-    template1: str,
-    template2: Optional[str],
-    untrimmed_output: Optional[str],
-    untrimmed_paired_output: Optional[str],
-    discard_untrimmed: bool,
-    file_opener,
-):
-    demultiplex_out = dict()
-    demultiplex_out2: Optional[Dict[str, Any]] = (
-        dict() if template2 is not None else None
-    )
-    for name in adapter_names:
-        path1 = template1.replace("{name}", name)
-        demultiplex_out[name] = file_opener.xopen(path1, "wb")
-        if demultiplex_out2 is not None:
-            assert template2 is not None
-            path2 = template2.replace("{name}", name)
-            demultiplex_out2[name] = file_opener.xopen(path2, "wb")
-    untrimmed_path: Optional[str] = template1.replace("{name}", "unknown")
-    if untrimmed_output:
-        untrimmed_path = untrimmed_output
-    if discard_untrimmed:
-        untrimmed = None
-    else:
-        untrimmed = file_opener.xopen(untrimmed_path, "wb")
-    if template2 is not None:
-        untrimmed2_path = template2.replace("{name}", "unknown")
-        if untrimmed_paired_output:
-            untrimmed2_path = untrimmed_paired_output
-        if discard_untrimmed:
-            untrimmed2 = None
-        else:
-            untrimmed2 = file_opener.xopen(untrimmed2_path, "wb")
-    else:
-        untrimmed2 = None
-    return demultiplex_out, demultiplex_out2, untrimmed, untrimmed2
 
 
 def determine_demultiplex_mode(
@@ -796,7 +657,7 @@ def check_arguments(args, paired: bool) -> None:
 
 
 def make_pipeline_from_args(  # noqa: C901
-    args, input_file_format, outfiles, paired, adapters, adapters2
+    args, input_file_format, outfiles, paired, adapters, adapters2, default_outfile
 ):
     """
     Set up a processing pipeline from parsed command-line arguments.
@@ -809,6 +670,9 @@ def make_pipeline_from_args(  # noqa: C901
     pair_filter_mode = None
     if paired:
         pair_filter_mode = "any" if args.pair_filter is None else args.pair_filter
+
+    adapter_names: List[Optional[str]] = [a.name for a in adapters]
+    adapter_names2: List[Optional[str]] = [a.name for a in adapters2]
 
     steps = []
     for step_class, path in (
@@ -877,13 +741,9 @@ def make_pipeline_from_args(  # noqa: C901
                 paths = paths[:1]
             else:
                 interleaved = False
-
+            FIXME
             if path1:
-                record_writer = outfiles.open_record_writer(
-                    *paths,
-                    qualities=input_file_format.has_qualities(),
-                    interleaved=interleaved,
-                )
+                record_writer = outfiles.open_record_writer(*paths)
 
         if paired:
             step = PairedEndFilter(
@@ -942,6 +802,108 @@ def make_pipeline_from_args(  # noqa: C901
         else:
             step = SingleEndFilter(predicate, None)
         steps.append(step)
+
+    # Add the last step that writes the records that made it through the pipeline
+    # to the final output(s)
+
+    if (
+        int(args.discard_trimmed)
+        + int(args.discard_untrimmed)
+        + int(
+            args.untrimmed_output is not None
+            or args.untrimmed_paired_output is not None
+        )
+        > 1
+    ):
+        raise CommandLineError(
+            "Only one of the --discard-trimmed, --discard-untrimmed "
+            "and --untrimmed-output options can be used at the same time."
+        )
+
+    demultiplex_mode = determine_demultiplex_mode(args.output, args.paired_output)
+    if demultiplex_mode and args.discard_trimmed:
+        raise CommandLineError("Do not use --discard-trimmed when demultiplexing.")
+    if demultiplex_mode == "combinatorial" and args.pair_adapters:
+        raise CommandLineError(
+            "With --pair-adapters, you can only use {name} in your output file name template, "
+            "not {name1} and {name2} (no combinatorial demultiplexing)."
+        )
+    if demultiplex_mode == "normal":
+        step = Demultiplexer(
+            adapter_names,
+            template1=args.output,
+            template2=args.paired_output,
+            untrimmed_output=args.untrimmed_output,
+            untrimmed_paired_output=args.untrimmed_paired_output,
+            discard_untrimmed=args.discard_untrimmed,
+            outfiles=outfiles,
+        )
+        steps.append(step)
+    elif demultiplex_mode == "combinatorial":
+        assert "{name1}" in args.output and "{name2}" in args.output
+        assert "{name1}" in args.paired_output and "{name2}" in args.paired_output
+        if args.untrimmed_output or args.untrimmed_paired_output:
+            raise CommandLineError(
+                "Combinatorial demultiplexing (with {name1} and {name2})"
+                " cannot be combined with --untrimmed-output or --untrimmed-paired-output"
+            )
+
+        step = CombinatorialDemultiplexer(
+            adapter_names,
+            adapter_names2,
+            template1=args.output,
+            template2=args.paired_output,
+            discard_untrimmed=args.discard_untrimmed,
+            outfiles=outfiles,
+        )
+
+        """
+        def _create_demultiplexer(self, outfiles) -> Union[PairedDemultiplexer, CombinatorialDemultiplexer]:
+            def open_writer(file, file2):
+                return self._open_writer(file, file2, force_fasta=outfiles.force_fasta)
+
+            if outfiles.combinatorial_out is not None:
+                assert outfiles.untrimmed is None and outfiles.untrimmed2 is None
+                writers = dict()
+                for key, out in outfiles.combinatorial_out.items():
+                    writers[key] = open_writer(out, outfiles.combinatorial_out2[key])
+                return CombinatorialDemultiplexer(writers)
+            else:
+                writers = dict()
+                if outfiles.untrimmed is not None:
+                    writers[None] = open_writer(outfiles.untrimmed, outfiles.untrimmed2)
+                for name, file in outfiles.demultiplex_out.items():
+                    writers[name] = open_writer(file, outfiles.demultiplex_out2[name])
+                return PairedDemultiplexer(writers)
+        """
+
+    else:
+
+        untrimmed, untrimmed2 = file_opener.xopen_pair(
+            args.untrimmed_output, args.untrimmed_paired_output, "wb"
+        )
+        out, out2 = file_opener.xopen_pair(args.output, args.paired_output, "wb")
+        if out is None:
+            out = default_outfile
+
+        # Some special handling to allow overriding the wrapper for
+        # --discard-untrimmed/--untrimmed-(paired-)output
+
+        # Set up the remaining filters to deal with --discard-trimmed,
+        # --discard-untrimmed and --untrimmed-output. These options
+        # are mutually exclusive in order to avoid brain damage.
+        if self.discard_trimmed:
+            steps.append(self._make_filter(DiscardTrimmed(), DiscardTrimmed(), None))
+        elif self.discard_untrimmed:
+            steps.append(self._make_untrimmed_filter(None))
+        elif outfiles.untrimmed:
+            files = [outfiles.untrimmed]
+            if self.paired:
+                files += [outfiles.untrimmed2]
+            untrimmed_writer = self._open_writer(*files)
+            steps.append(self._make_untrimmed_filter(untrimmed_writer))
+
+        steps.append(self._final_filter(outfiles))
 
     logger.debug("Pipeline steps:")
     for step in steps:
@@ -1238,18 +1200,15 @@ def main(cmdlineargs, default_outfile=sys.stdout.buffer) -> Statistics:
         log_adapters(adapters, adapters2 if paired else None)
 
         with make_runner(input_paths, cores, args.buffer_size) as runner:
-            adapter_names: List[Optional[str]] = [a.name for a in adapters]
-            adapter_names2: List[Optional[str]] = [a.name for a in adapters2]
-            outfiles = open_output_files(
-                args,
-                default_outfile,
-                file_opener,
-                adapter_names,
-                adapter_names2,
-                proxied=cores > 1,
-            )
+            outfiles = open_output_files(args, file_opener, proxied=cores > 1)
             pipeline = make_pipeline_from_args(
-                args, runner.input_file_format(), outfiles, paired, adapters, adapters2
+                args,
+                runner.input_file_format(),
+                outfiles,
+                paired,
+                adapters,
+                adapters2,
+                default_outfile,
             )
             logger.info(
                 "Processing %s reads on %d core%s ...",

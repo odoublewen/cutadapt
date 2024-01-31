@@ -17,10 +17,11 @@ Steps are added to the pipeline in a certain order:
    Demultiplexers are sinks, for example.
 """
 from abc import ABC, abstractmethod
-from typing import Tuple, Dict, Optional, Any, TextIO
+from typing import Tuple, Dict, Optional, Any, TextIO, Sequence
 
 from dnaio import SequenceRecord
 
+from .files import OutputFiles
 from .predicates import Predicate
 from .modifiers import ModificationInfo
 from .statistics import ReadLengthStatistics
@@ -331,22 +332,51 @@ class Demultiplexer(SingleEndStep, HasStatistics, HasFilterStatistics):
     """
     Demultiplex trimmed reads. Reads are written to different output files
     depending on which adapter matches.
-
-    Untrimmed reads are sent to writers[None] if that key exists.
     """
 
-    def __init__(self, writers: Dict[Optional[str], Any]):
+    def __init__(
+        self,
+        adapter_names: Sequence[str],
+        template: str,
+        untrimmed_output: Optional[str],
+        discard_untrimmed: bool,
+        outfiles: OutputFiles,
+    ):
         """
         writers maps an adapter name to a writer
         """
-        super().__init__()
-        self._writers = writers
-        self._untrimmed_writer = self._writers.get(None, None)
+        self._writers, self._untrimmed_writer = self._open_writers(
+            adapter_names, template, untrimmed_output, discard_untrimmed, outfiles
+        )
         self._statistics = ReadLengthStatistics()
         self._filtered = 0
 
     def __repr__(self):
         return f"<Demultiplexer len(writers)={len(self._writers)}>"
+
+    @staticmethod
+    def _open_writers(
+        adapter_names: Sequence[str],
+        template: str,
+        untrimmed_output: Optional[str],
+        discard_untrimmed: bool,
+        outfiles: OutputFiles,
+    ):
+        writers = dict()
+        for name in adapter_names:
+            path = template.replace("{name}", name)
+            writers[name] = outfiles.open_record_writer(path)
+        if discard_untrimmed:
+            untrimmed = None
+        else:
+            untrimmed_path: Optional[str]
+            if untrimmed_output:
+                untrimmed_path = untrimmed_output
+            else:
+                untrimmed_path = template.replace("{name}", "unknown")
+            untrimmed = outfiles.open_record_writer(untrimmed_path)
+
+        return writers, untrimmed
 
     def __call__(self, read, info) -> Optional[SequenceRecord]:
         """
@@ -379,12 +409,54 @@ class PairedDemultiplexer(PairedEndStep, HasStatistics, HasFilterStatistics):
     depending on which adapter (in read 1) matches.
     """
 
-    def __init__(self, writers: Dict[Optional[str], Any]):
+    def __init__(
+        self,
+    ):
         super().__init__()
-        self._writers = writers
+        self._writers = self._open_writers()
         self._untrimmed_writer = self._writers.get(None, None)
         self._statistics = ReadLengthStatistics()
         self._filtered = 0
+
+    @staticmethod
+    def _open_writers(
+        adapter_names: Sequence[str],
+        template1: str,
+        template2: Optional[str],
+        untrimmed_output: Optional[str],
+        untrimmed_paired_output: Optional[str],
+        discard_untrimmed: bool,
+        file_opener,
+    ):
+        demultiplex_out = dict()
+        demultiplex_out2: Optional[Dict[str, Any]] = (
+            dict() if template2 is not None else None
+        )
+        for name in adapter_names:
+            path1 = template1.replace("{name}", name)
+            demultiplex_out[name] = file_opener.xopen(path1, "wb")
+            if demultiplex_out2 is not None:
+                assert template2 is not None
+                path2 = template2.replace("{name}", name)
+                demultiplex_out2[name] = file_opener.xopen(path2, "wb")
+        untrimmed_path: Optional[str] = template1.replace("{name}", "unknown")
+        if untrimmed_output:
+            untrimmed_path = untrimmed_output
+        if discard_untrimmed:
+            untrimmed = None
+        else:
+            untrimmed = file_opener.xopen(untrimmed_path, "wb")
+        if template2 is not None:
+            untrimmed2_path = template2.replace("{name}", "unknown")
+            if untrimmed_paired_output:
+                untrimmed2_path = untrimmed_paired_output
+            if discard_untrimmed:
+                untrimmed2 = None
+            else:
+                untrimmed2 = file_opener.xopen(untrimmed2_path, "wb")
+        else:
+            untrimmed2 = None
+        return demultiplex_out, demultiplex_out2, untrimmed, untrimmed2
 
     def __call__(
         self, read1, read2, info1: ModificationInfo, info2: ModificationInfo
@@ -417,16 +489,64 @@ class CombinatorialDemultiplexer(PairedEndStep, HasStatistics):
     matches on R1 and R2.
     """
 
-    def __init__(self, writers: Dict[Tuple[Optional[str], Optional[str]], Any]):
+    # TODO rename template1, template2 (or template_r1, template_r2)
+    def __init__(
+        self,
+        adapter_names,
+        adapter_names2,
+        output_template: str,
+        paired_output_template: str,
+        discard_untrimmed: bool,
+        outfiles: OutputFiles,
+    ):
         """
         Adapter names of the matches on R1 and R2 will be used to look up the writer in the
         writers dict. If there is no match on a read, None is used in the lookup instead
         of the name. Missing dictionary keys are ignored and can be used to discard
         read pairs.
         """
-        super().__init__()
-        self._writers = writers
+        self._writers = self._open_writers(
+            adapter_names,
+            adapter_names2,
+            output_template,
+            paired_output_template,
+            discard_untrimmed,
+            outfiles,
+        )
         self._statistics = ReadLengthStatistics()
+
+    @staticmethod
+    def _open_writers(
+        adapter_names: Sequence[str],
+        adapter_names2: Sequence[str],
+        output_template: str,
+        paired_output_template: str,
+        discard_untrimmed: bool,
+        outfiles: OutputFiles,
+    ):
+        combinatorial_out = dict()
+        combinatorial_out2 = dict()
+        extra: List[Tuple[Optional[str], Optional[str]]]
+        if discard_untrimmed:
+            extra = []
+        else:
+            extra = [(None, None)]
+            extra += [(None, name2) for name2 in adapter_names2]
+            extra += [(name1, None) for name1 in adapter_names]
+        for name1, name2 in (
+            list(itertools.product(adapter_names, adapter_names2)) + extra
+        ):  # type: ignore
+            fname1 = name1 if name1 is not None else "unknown"
+            fname2 = name2 if name2 is not None else "unknown"
+            path1 = output_template.replace("{name1}", fname1).replace(
+                "{name2}", fname2
+            )
+            path2 = paired_output_template.replace("{name1}", fname1).replace(
+                "{name2}", fname2
+            )
+            combinatorial_out[(name1, name2)] = file_opener.xopen(path1, "wb")
+            combinatorial_out2[(name1, name2)] = file_opener.xopen(path2, "wb")
+        return combinatorial_out, combinatorial_out2
 
     def __call__(self, read1, read2, info1, info2) -> Optional[RecordPair]:
         """

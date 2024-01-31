@@ -191,26 +191,14 @@ class ProxyRecordWriter:
 
 
 class OutputFiles:
-    """
-    The attributes are either None or open file-like objects except for demultiplex_out
-    and demultiplex_out2, which are dictionaries that map an adapter name
-    to a file-like object.
-    """
-
     def __init__(
         self,
         *,
         file_opener: FileOpener,
         proxied: bool,
-        out: Optional[BinaryIO] = None,
-        out2: Optional[BinaryIO] = None,
-        untrimmed: Optional[BinaryIO] = None,
-        untrimmed2: Optional[BinaryIO] = None,
-        demultiplex_out: Optional[Dict[str, BinaryIO]] = None,
-        demultiplex_out2: Optional[Dict[str, BinaryIO]] = None,
-        combinatorial_out: Optional[Dict[Tuple[str, str], BinaryIO]] = None,
-        combinatorial_out2: Optional[Dict[Tuple[str, str], BinaryIO]] = None,
         force_fasta: Optional[bool] = None,
+        qualities: bool,
+        interleaved: bool,
     ):
         self._file_opener = file_opener
         # TODO do these actually have to be dicts?
@@ -220,15 +208,8 @@ class OutputFiles:
         self._proxy_files: List[Union[ProxyTextFile, ProxyRecordWriter]] = []
         self._proxied = proxied
         self.force_fasta = force_fasta
-
-        self.out = out
-        self.out2 = out2
-        self.untrimmed = untrimmed
-        self.untrimmed2 = untrimmed2
-        self.demultiplex_out = demultiplex_out
-        self.demultiplex_out2 = demultiplex_out2
-        self.combinatorial_out = combinatorial_out
-        self.combinatorial_out2 = combinatorial_out2
+        self._qualities = qualities
+        self._interleaved = interleaved
 
     def open_text(self, path):
         assert path not in self._binary_files  # TODO
@@ -247,13 +228,16 @@ class OutputFiles:
             self._text_files[path] = text_file
             return text_file
 
-    def open_record_writer(self, *paths, qualities: bool, interleaved: bool):
+    def open_record_writer(self, *paths):
         kwargs = dict(
-            qualities=qualities,
+            qualities=self._qualities,
             fileformat="fasta" if self.force_fasta else None,
-            interleaved=interleaved,
         )
-        assert paths  # TODO
+        if len(paths) not in (1, 2):
+            raise ValueError("Expected one or two paths")
+        if paths[1] is None:
+            paths = paths[:1]
+            kwargs["interleaved"] = True
         for path in paths:
             assert path is not None
             assert path not in self._binary_files  # TODO
@@ -278,61 +262,11 @@ class OutputFiles:
         return self._proxy_files
 
     def __iter__(self):
-        for f in [
-            self.out,
-            self.out2,
-            self.untrimmed,
-            self.untrimmed2,
-        ]:
-            if f is not None:
-                yield f
-        for outs in (
-            self.demultiplex_out,
-            self.demultiplex_out2,
-            self.combinatorial_out,
-            self.combinatorial_out2,
-        ):
-            if outs is not None:
-                for f in outs.values():
-                    assert f is not None
-                    yield f
         yield from self._binary_files.values()
-
-    def as_bytesio(self) -> "OutputFiles":
-        """
-        Create a new OutputFiles instance that has BytesIO instances for each non-None output file
-        """
-        result = OutputFiles(
-            file_opener=self._file_opener,
-            proxied=False,
-            force_fasta=self.force_fasta,
-        )
-        for attr in (
-            "out",
-            "out2",
-            "untrimmed",
-            "untrimmed2",
-        ):
-            if getattr(self, attr) is not None:
-                setattr(result, attr, io.BytesIO())
-        for attr in (
-            "demultiplex_out",
-            "demultiplex_out2",
-            "combinatorial_out",
-            "combinatorial_out2",
-        ):
-            if getattr(self, attr) is not None:
-                setattr(result, attr, dict())
-                for k, v in getattr(self, attr).items():
-                    getattr(result, attr)[k] = io.BytesIO()
-        return result
 
     def close(self) -> None:
         """Close all output files that are not stdout"""
-        for f in self:
-            if f is sys.stdout or f is sys.stdout.buffer:
-                continue
-            f.close()
+        # TODO ... that *are not* stdout
         if self._proxied:
             for f in self._binary_files.values():
                 f.close()
