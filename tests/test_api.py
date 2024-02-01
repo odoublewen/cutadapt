@@ -10,8 +10,10 @@ import copy
 import json
 import os
 
+from cutadapt.predicates import TooShort, DiscardUntrimmed
 from cutadapt.runners import make_runner
-from cutadapt.steps import InfoFileWriter, PairedSingleEndStep
+from cutadapt.steps import InfoFileWriter, PairedSingleEndStep, SingleEndSink, SingleEndFilter, \
+    PairedEndFilter, PairedEndSink
 from cutadapt.utils import DummyProgress
 from utils import datapath
 
@@ -58,14 +60,18 @@ def test_pipeline_single(tmp_path, cores):
         QualityTrimmer(cutoff_front=0, cutoff_back=15),
         AdapterCutter([adapter]),
     ]
-    out = file_opener.xopen(tmp_path / "out.fastq", "wb")
-    outfiles = OutputFiles(file_opener=file_opener, out=out, proxied=cores > 1)
-    steps = [InfoFileWriter(outfiles.open_text(info_path))]
     inpaths = InputPaths(datapath("small.fastq"))
     with make_runner(inpaths, cores) as runner:
-        pipeline = SingleEndPipeline(runner.input_file_format(), modifiers, steps)
-        pipeline.minimum_length = (10,)
-        pipeline.discard_untrimmed = True
+        outfiles = OutputFiles(file_opener=file_opener, proxied=cores > 1, force_fasta=False,
+            qualities=runner.input_file_format().has_qualities(), interleaved=False
+        )
+        steps = [
+            InfoFileWriter(outfiles.open_text(info_path)),
+            SingleEndFilter(TooShort(10), writer=None),
+            SingleEndFilter(DiscardUntrimmed(), writer=None),
+            SingleEndSink(outfiles.open_record_writer(tmp_path / "out.fastq"))
+        ]
+        pipeline = SingleEndPipeline(modifiers, steps)
         stats = runner.run(pipeline, outfiles, DummyProgress())
     assert stats is not None
     assert info_path.exists()
@@ -103,23 +109,23 @@ def test_pipeline_paired(tmp_path, cores):
 
     file_opener = FileOpener()
     inpaths = InputPaths(datapath("paired.1.fastq"), datapath("paired.2.fastq"))
-    out, out2 = file_opener.xopen_pair(
-        tmp_path / "out.1.fastq", tmp_path / "out.2.fastq", "wb"
-    )
-    outfiles = OutputFiles(
-        file_opener=file_opener,
-        proxied=cores > 1,
-        out=out,
-        out2=out2,
-    )
-    steps = [PairedSingleEndStep(InfoFileWriter(outfiles.open_text(info_path)))]
-
     with make_runner(inpaths, cores=cores) as runner:
+        outfiles = OutputFiles(
+            file_opener=file_opener,
+            proxied=cores > 1,
+            force_fasta=False,
+            qualities=runner.input_file_format().has_qualities(),
+            interleaved=False
+        )
+        steps = [
+            PairedSingleEndStep(InfoFileWriter(outfiles.open_text(info_path))),
+            PairedEndFilter(TooShort(10), None, writer=None),
+            PairedEndFilter(DiscardUntrimmed(), DiscardUntrimmed(), writer=None, pair_filter_mode="any"),
+            PairedEndSink(outfiles.open_record_writer(tmp_path / "out.1.fastq", tmp_path / "out.2.fastq"))
+        ]
         pipeline = PairedEndPipeline(
             runner.input_file_format(), modifiers, "any", steps
         )
-        pipeline.minimum_length = (10, None)
-        pipeline.discard_untrimmed = True
         stats = runner.run(pipeline, outfiles, DummyProgress())
     assert stats is not None
     assert info_path.exists()

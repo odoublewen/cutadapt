@@ -411,9 +411,15 @@ class PairedDemultiplexer(PairedEndStep, HasStatistics, HasFilterStatistics):
 
     def __init__(
         self,
+        adapter_names: Sequence[str],
+        template1: str,
+        template2: Optional[str],
+        untrimmed_output: Optional[str],
+        untrimmed_paired_output: Optional[str],
+        discard_untrimmed: bool,
+        file_opener,
     ):
-        super().__init__()
-        self._writers = self._open_writers()
+        self._writers = self._open_writers(adapter_names, template1, template2, untrimmed_output, untrimmed_paired_output, discard_untrimmed, file_opener)
         self._untrimmed_writer = self._writers.get(None, None)
         self._statistics = ReadLengthStatistics()
         self._filtered = 0

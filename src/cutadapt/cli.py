@@ -98,7 +98,7 @@ from cutadapt.predicates import (
     TooManyN,
     TooManyExpectedErrors,
     TooHighAverageErrorRate,
-    CasavaFiltered,
+    CasavaFiltered, DiscardTrimmed, DiscardUntrimmed,
 )
 from cutadapt.report import full_report, minimal_report, Statistics
 from cutadapt.pipeline import SingleEndPipeline, PairedEndPipeline
@@ -112,7 +112,7 @@ from cutadapt.steps import (
     SingleEndFilter,
     PairedEndFilter,
     Demultiplexer,
-    CombinatorialDemultiplexer,
+    CombinatorialDemultiplexer, PairedDemultiplexer, PairedEndSink, SingleEndSink,
 )
 from cutadapt.utils import available_cpu_count, Progress, DummyProgress
 from cutadapt.log import setup_logging, REPORT
@@ -829,15 +829,22 @@ def make_pipeline_from_args(  # noqa: C901
             "not {name1} and {name2} (no combinatorial demultiplexing)."
         )
     if demultiplex_mode == "normal":
-        step = Demultiplexer(
-            adapter_names,
-            template1=args.output,
-            template2=args.paired_output,
-            untrimmed_output=args.untrimmed_output,
-            untrimmed_paired_output=args.untrimmed_paired_output,
-            discard_untrimmed=args.discard_untrimmed,
-            outfiles=outfiles,
-        )
+        if paired:
+            step = PairedDemultiplexer(
+                adapter_names, adapter_names2, template1=args.output, template2=args.paired_output,
+                untrimmed_output=args.untrimmed_output,
+                untrimmed_paired_output=args.untrimmed_paired_output,
+                discard_untrimmed=args.discard_untrimmed,
+                outfiles=outfiles,
+            )
+        else:
+            step = Demultiplexer(
+                adapter_names,
+                template=args.output,
+                untrimmed_output=args.untrimmed_output,
+                discard_untrimmed=args.discard_untrimmed,
+                outfiles=outfiles,
+            )
         steps.append(step)
     elif demultiplex_mode == "combinatorial":
         assert "{name1}" in args.output and "{name2}" in args.output
@@ -847,7 +854,6 @@ def make_pipeline_from_args(  # noqa: C901
                 "Combinatorial demultiplexing (with {name1} and {name2})"
                 " cannot be combined with --untrimmed-output or --untrimmed-paired-output"
             )
-
         step = CombinatorialDemultiplexer(
             adapter_names,
             adapter_names2,
@@ -856,7 +862,7 @@ def make_pipeline_from_args(  # noqa: C901
             discard_untrimmed=args.discard_untrimmed,
             outfiles=outfiles,
         )
-
+        steps.append(step)
         """
         def _create_demultiplexer(self, outfiles) -> Union[PairedDemultiplexer, CombinatorialDemultiplexer]:
             def open_writer(file, file2):
@@ -879,31 +885,52 @@ def make_pipeline_from_args(  # noqa: C901
 
     else:
 
-        untrimmed, untrimmed2 = file_opener.xopen_pair(
-            args.untrimmed_output, args.untrimmed_paired_output, "wb"
-        )
-        out, out2 = file_opener.xopen_pair(args.output, args.paired_output, "wb")
-        if out is None:
-            out = default_outfile
-
+        # TODO??
         # Some special handling to allow overriding the wrapper for
         # --discard-untrimmed/--untrimmed-(paired-)output
 
         # Set up the remaining filters to deal with --discard-trimmed,
         # --discard-untrimmed and --untrimmed-output. These options
         # are mutually exclusive in order to avoid brain damage.
-        if self.discard_trimmed:
-            steps.append(self._make_filter(DiscardTrimmed(), DiscardTrimmed(), None))
-        elif self.discard_untrimmed:
-            steps.append(self._make_untrimmed_filter(None))
-        elif outfiles.untrimmed:
+        if args.discard_trimmed:
+            predicate = DiscardTrimmed()
+            if paired:
+                step = PairedEndFilter(
+                    predicate, predicate, writer=None, pair_filter_mode=pair_filter_mode
+                )
+            else:
+                step = SingleEndFilter(predicate, None)
+
+            steps.append(step)
+        elif args.discard_untrimmed:
+            predicate = DiscardUntrimmed()
+            if paired:
+                step = PairedEndFilter(
+                    predicate, predicate, writer=None, pair_filter_mode=pair_filter_mode
+                )
+            else:
+                step = SingleEndFilter(predicate, None)
+            steps.append(step)
+        elif args.untrimmed_output or args.untrimmed_paired_output:
             files = [outfiles.untrimmed]
-            if self.paired:
+            if paired:
                 files += [outfiles.untrimmed2]
             untrimmed_writer = self._open_writer(*files)
             steps.append(self._make_untrimmed_filter(untrimmed_writer))
 
-        steps.append(self._final_filter(outfiles))
+        if paired:
+            steps.append(PairedEndSink(outfiles.open_record_writer(args.output, args.output2)))
+        else:
+            #if args.output is None:
+            # out = default_outfile
+            steps.append(SingleEndSink(outfiles.open_record_writer(args.output)))
+
+            # untrimmed, untrimmed2 = file_opener.xopen_pair(
+            #     args.untrimmed_output, args.untrimmed_paired_output, "wb"
+            # )
+            # out, out2 = file_opener.xopen_pair(args.output, args.paired_output, "wb")
+            # if out is None:
+            #     out = default_outfile
 
     logger.debug("Pipeline steps:")
     for step in steps:
@@ -970,7 +997,7 @@ def make_pipeline_from_args(  # noqa: C901
             input_file_format, modifiers, pair_filter_mode, steps
         )  # type: Any
     else:
-        pipeline = SingleEndPipeline(input_file_format, modifiers, steps)
+        pipeline = SingleEndPipeline(modifiers, steps)
 
     # When adapters are being trimmed only in R1 or R2, override the pair filter mode
     # as using the default of 'any' would regard all read pairs as untrimmed.
@@ -1200,7 +1227,7 @@ def main(cmdlineargs, default_outfile=sys.stdout.buffer) -> Statistics:
         log_adapters(adapters, adapters2 if paired else None)
 
         with make_runner(input_paths, cores, args.buffer_size) as runner:
-            outfiles = open_output_files(args, file_opener, proxied=cores > 1)
+            outfiles = open_output_files(args, file_opener, proxied=cores > 1, input_file_format=runner.input_file_format(), interleaved=args.interleaved)
             pipeline = make_pipeline_from_args(
                 args,
                 runner.input_file_format(),

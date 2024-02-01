@@ -235,7 +235,7 @@ class OutputFiles:
         )
         if len(paths) not in (1, 2):
             raise ValueError("Expected one or two paths")
-        if paths[1] is None:
+        if len(paths) == 2 and paths[1] is None:
             paths = paths[:1]
             kwargs["interleaved"] = True
         for path in paths:
