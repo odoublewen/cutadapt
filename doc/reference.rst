@@ -712,8 +712,14 @@ Info file format
 When the ``--info-file`` command-line parameter is given, detailed
 information about where adapters were found in each read are written
 to the given file. It is a tab-separated text file that contains at
-least one row per input read. Normally, there is exactly one row per
-input read, but in the following cases, multiple rows may be output:
+least one row per input read. 
+
+.. note:: Paired-end reads not supported.
+   The info file currently does not contain any info about read 2, when
+   cutadapt is run in paired-end mode.
+
+Normally, there is exactly one row per input read, but in the following cases, 
+multiple rows may be output:
 
  - The option ``--times`` is in use.
  - A linked adapter is used.
