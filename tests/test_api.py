@@ -62,7 +62,7 @@ def test_pipeline_single(tmp_path, cores):
     ]
     inpaths = InputPaths(datapath("small.fastq"))
     with make_runner(inpaths, cores) as runner:
-        outfiles = OutputFiles(file_opener=file_opener, proxied=cores > 1, force_fasta=False,
+        outfiles = OutputFiles(file_opener=file_opener, proxied=cores > 1,
             qualities=runner.input_file_format().has_qualities(), interleaved=False
         )
         steps = [
@@ -72,14 +72,11 @@ def test_pipeline_single(tmp_path, cores):
             SingleEndSink(outfiles.open_record_writer(tmp_path / "out.fastq"))
         ]
         pipeline = SingleEndPipeline(modifiers, steps)
-        stats = runner.run(pipeline, outfiles, DummyProgress())
+        stats = runner.run(pipeline, DummyProgress(), outfiles)
     assert stats is not None
     assert info_path.exists()
     json.dumps(stats.as_json())
     outfiles.close()
-    # TODO
-    # - info file isn’t written, what is missing?
-    # - see next function for more TODOs that also apply here
 
 
 def test_pipeline_paired(tmp_path, cores):
@@ -113,7 +110,6 @@ def test_pipeline_paired(tmp_path, cores):
         outfiles = OutputFiles(
             file_opener=file_opener,
             proxied=cores > 1,
-            force_fasta=False,
             qualities=runner.input_file_format().has_qualities(),
             interleaved=False
         )
@@ -126,7 +122,7 @@ def test_pipeline_paired(tmp_path, cores):
         pipeline = PairedEndPipeline(
             runner.input_file_format(), modifiers, "any", steps
         )
-        stats = runner.run(pipeline, outfiles, DummyProgress())
+        stats = runner.run(pipeline, DummyProgress(), outfiles)
     assert stats is not None
     assert info_path.exists()
     _ = stats.as_json()

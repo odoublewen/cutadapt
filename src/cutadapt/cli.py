@@ -486,7 +486,6 @@ def open_output_files(
     return OutputFiles(
         file_opener=file_opener,
         proxied=proxied,
-        force_fasta=args.fasta,
         qualities=input_file_format.has_qualities(),
         interleaved=interleaved,
     )
@@ -919,11 +918,13 @@ def make_pipeline_from_args(  # noqa: C901
             steps.append(self._make_untrimmed_filter(untrimmed_writer))
 
         if paired:
-            steps.append(PairedEndSink(outfiles.open_record_writer(args.output, args.output2)))
+            steps.append(PairedEndSink(outfiles.open_record_writer(args.output, args.paired_output)))
         else:
-            #if args.output is None:
-            # out = default_outfile
-            steps.append(SingleEndSink(outfiles.open_record_writer(args.output)))
+            if args.output is None:
+                out = outfiles.open_record_writer_from_binary_io(default_outfile, interleaved=paired and args.interleaved)
+            else:
+                out = outfiles.open_record_writer(args.output)
+            steps.append(SingleEndSink(out))
 
             # untrimmed, untrimmed2 = file_opener.xopen_pair(
             #     args.untrimmed_output, args.untrimmed_paired_output, "wb"
@@ -1243,7 +1244,7 @@ def main(cmdlineargs, default_outfile=sys.stdout.buffer) -> Statistics:
                 cores,
                 "s" if cores > 1 else "",
             )
-            stats = runner.run(pipeline, outfiles, progress)
+            stats = runner.run(pipeline, progress, outfiles)
     except KeyboardInterrupt:
         if args.debug:
             raise

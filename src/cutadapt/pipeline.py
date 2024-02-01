@@ -89,9 +89,6 @@ class Pipeline(ABC):
     def flush(self) -> None:
         for f in self._textiowrappers:
             f.flush()
-        assert self._outfiles is not None
-        for f in self._outfiles:
-            f.flush()
 
     def close(self) -> None:
         self._close_input()
@@ -113,7 +110,6 @@ class Pipeline(ABC):
     def process_reads(
         self,
         infiles: InputFiles,
-        outfiles: OutputFiles,
         progress: Optional[Progress] = None,
     ) -> Tuple[int, int, Optional[int]]:
         pass
@@ -136,7 +132,6 @@ class SingleEndPipeline(Pipeline):
     def process_reads(
         self,
         infiles: InputFiles,
-        outfiles: OutputFiles,
         progress: Optional[Progress] = None,
     ) -> Tuple[int, int, Optional[int]]:
         """Run the pipeline. Return statistics"""
@@ -221,7 +216,6 @@ class PairedEndPipeline(Pipeline):
     def process_reads(
         self,
         infiles: InputFiles,
-        outfiles: OutputFiles,
         progress: Optional[Progress] = None,
     ) -> Tuple[int, int, Optional[int]]:
         self._infiles = infiles

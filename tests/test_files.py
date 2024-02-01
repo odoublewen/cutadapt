@@ -90,10 +90,25 @@ class TestOutputFiles:
         o.close()
         assert path.read_text() == "@r\nACGT\n+\n####\n"
 
-    # - paired record writer
-    # - interleaved record writer
+    def test_paired_record_writer(self, tmp_path):
+        o = OutputFiles(file_opener=self.file_opener, proxied=False, qualities=True, interleaved=False)
+        path1 = tmp_path / "out.1.fastq"
+        path2 = tmp_path / "out.2.fastq"
+        f = o.open_record_writer(path1, path2)
+        f.write(SequenceRecord("r", "AACC", "####"), SequenceRecord("r", "GGTT", "####"))
+        o.close()
+        assert path1.read_text() == "@r\nAACC\n+\n####\n"
+        assert path2.read_text() == "@r\nGGTT\n+\n####\n"
+
+    def test_interleaved_record_writer(self, tmp_path):
+        o = OutputFiles(file_opener=self.file_opener, proxied=False, qualities=True, interleaved=True)
+        path = tmp_path / "out.1.fastq"
+        f = o.open_record_writer(path, None)
+        f.write(SequenceRecord("r", "AACC", "####"), SequenceRecord("r", "GGTT", "####"))
+        o.close()
+        assert path.read_text() == "@r\nAACC\n+\n####\n@r\nGGTT\n+\n####\n"
+
     # - test force fasta
     # - test qualities
     # - test proxied
-    # - test opening a BinaryIO file
     # - test complaint about duplicate file names

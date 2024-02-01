@@ -17,7 +17,7 @@ from cutadapt.files import (
     InputPaths,
     xopen_rb_raise_limit,
     detect_file_format,
-    FileFormat,
+    FileFormat, ProxyWriter,
 )
 from cutadapt.pipeline import Pipeline
 from cutadapt.report import Statistics
@@ -145,7 +145,7 @@ class WorkerProcess(mpctx_Process):
         id_: int,
         pipeline: Pipeline,
         inpaths: InputPaths,
-        orig_outfiles: OutputFiles,
+        proxy_files: List[ProxyWriter],
         read_pipe: Connection,
         write_pipe: Connection,
         need_work_queue: multiprocessing.Queue,
@@ -158,10 +158,7 @@ class WorkerProcess(mpctx_Process):
         self._read_pipe = read_pipe
         self._write_pipe = write_pipe
         self._need_work_queue = need_work_queue
-        # Do not store orig_outfiles directly because it contains
-        # _io.BufferedWriter attributes, which cannot be pickled.
-        self._original_outfiles = orig_outfiles.as_bytesio()
-        self._proxy_files = orig_outfiles.proxy_files()
+        self._proxy_files = proxy_files
 
     def run(self):
         try:
@@ -184,12 +181,11 @@ class WorkerProcess(mpctx_Process):
                     for _ in range(self._n_input_files)
                 ]
                 infiles = InputFiles(*files, interleaved=self._interleaved_input)
-                outfiles = self._original_outfiles.as_bytesio()
-                (n, bp1, bp2) = self._pipeline.process_reads(infiles, outfiles)
+                (n, bp1, bp2) = self._pipeline.process_reads(infiles)
                 self._pipeline.flush()
                 cur_stats = Statistics().collect(n, bp1, bp2, [], self._pipeline._steps)
                 stats += cur_stats
-                self._send_outfiles(outfiles, chunk_index, n)
+                self._send_outfiles(chunk_index, n)
                 self._pipeline.close()
 
             m = self._pipeline._modifiers
@@ -210,15 +206,9 @@ class WorkerProcess(mpctx_Process):
             self._write_pipe.send(-2)
             self._write_pipe.send((e, traceback.format_exc()))
 
-    def _send_outfiles(self, outfiles: OutputFiles, chunk_index: int, n_reads: int):
+    def _send_outfiles(self, chunk_index: int, n_reads: int):
         self._write_pipe.send(chunk_index)
         self._write_pipe.send(n_reads)
-
-        for f in outfiles:
-            f.flush()
-            assert isinstance(f, io.BytesIO)
-            processed_chunk = f.getvalue()
-            self._write_pipe.send_bytes(processed_chunk)
         for pf in self._proxy_files:
             for chunk in pf.drain():
                 self._write_pipe.send_bytes(chunk)
@@ -254,7 +244,7 @@ class PipelineRunner(ABC):
     """
 
     @abstractmethod
-    def run(self, pipeline, outfiles: OutputFiles, progress: Progress) -> Statistics:
+    def run(self, pipeline, progress: Progress, outfiles: OutputFiles) -> Statistics:
         """
         progress: Use an object that supports .update() and .close() such
         as DummyProgress, cutadapt.utils.Progress or a tqdm instance
@@ -335,7 +325,7 @@ class ParallelPipelineRunner(PipelineRunner):
         self._input_file_format = file_format
 
     def _start_workers(
-        self, pipeline, outfiles
+        self, pipeline, proxy_files
     ) -> Tuple[List[WorkerProcess], List[Connection]]:
         workers = []
         connections = []
@@ -346,7 +336,7 @@ class ParallelPipelineRunner(PipelineRunner):
                 index,
                 pipeline,
                 self._inpaths,
-                outfiles,
+                proxy_files,
                 self._connections[index],
                 conn_w,
                 self._need_work_queue,
@@ -356,10 +346,10 @@ class ParallelPipelineRunner(PipelineRunner):
             workers.append(worker)
         return workers, connections
 
-    def run(self, pipeline, outfiles: OutputFiles, progress) -> Statistics:
-        workers, connections = self._start_workers(pipeline, outfiles)
+    def run(self, pipeline, progress, outfiles: OutputFiles) -> Statistics:
+        workers, connections = self._start_workers(pipeline, outfiles.proxy_files())
         writers = []
-        for f in outfiles:
+        for f in outfiles.binary_files():
             writers.append(OrderedChunkWriter(f))
         stats = Statistics()
         while connections:
@@ -384,7 +374,6 @@ class ParallelPipelineRunner(PipelineRunner):
             w.join()
         self._reader_process.join()
         progress.close()
-        outfiles.close()
         return stats
 
     @staticmethod
@@ -425,11 +414,11 @@ class SerialPipelineRunner(PipelineRunner):
         self._input_file_format = infiles
 
     def run(
-        self, pipeline: Pipeline, outfiles: OutputFiles, progress: Progress
+        self, pipeline: Pipeline, progress: Progress, outfiles: OutputFiles
     ) -> Statistics:
         try:
             (n, total1_bp, total2_bp) = pipeline.process_reads(
-                self._infiles, outfiles, progress=progress
+                self._infiles, progress=progress
             )
         finally:
             pipeline.close()

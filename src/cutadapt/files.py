@@ -1,6 +1,7 @@
 import errno
 import io
 import sys
+from abc import ABC
 from enum import Enum
 from typing import BinaryIO, Optional, Dict, Tuple, List, TextIO, Union
 
@@ -141,7 +142,12 @@ class InputPaths:
         return InputFiles(*files, interleaved=self.interleaved)
 
 
-class ProxyTextFile:
+class ProxyWriter(ABC):
+    def drain(self) -> List[bytes]:
+        pass
+
+
+class ProxyTextFile(ProxyWriter):
     def __init__(self):
         self._buffer = io.BytesIO()
         self._file = io.TextIOWrapper(self._buffer)
@@ -164,7 +170,7 @@ class ProxyTextFile:
         self.__init__()
 
 
-class ProxyRecordWriter:
+class ProxyRecordWriter(ProxyWriter):
     def __init__(self, n_files: int, **kwargs):
         self._n_files = n_files
         self._kwargs = kwargs
@@ -199,22 +205,14 @@ class OutputFiles:
         qualities: bool,
         interleaved: bool,
     ):
-        """
-
-        Args:
-            file_opener:
-            proxied:
-            force_fasta:
-            qualities:
-            interleaved:
-        """
         self._file_opener = file_opener
         # TODO do these actually have to be dicts?
         self._binary_files: Dict[str, BinaryIO] = {}
         self._text_files: Dict[str, TextIO] = {}
         self._writers: Dict = {}
-        self._proxy_files: List[Union[ProxyTextFile, ProxyRecordWriter]] = []
+        self._proxy_files: List[ProxyWriter] = []
         self._proxied = proxied
+        self._to_close = []
         self._qualities = qualities
         self._interleaved = interleaved
 
@@ -236,9 +234,7 @@ class OutputFiles:
             return text_file
 
     def open_record_writer(self, *paths):
-        kwargs = dict(
-            qualities=self._qualities
-        )
+        kwargs = dict(qualities=self._qualities)
         if len(paths) not in (1, 2):
             raise ValueError("Expected one or two paths")
         if len(paths) == 2 and paths[1] is None:
@@ -261,10 +257,21 @@ class OutputFiles:
             self._writers[paths] = writer
             return writer
 
+    def open_record_writer_from_binary_io(self, file: BinaryIO, interleaved: bool):
+        self._binary_files["fake\0path"] = file  # TODO
+        if self._proxied:
+            proxy_writer = ProxyRecordWriter(1, qualities=self._qualities, interleaved=interleaved)
+            self._proxy_files.append(proxy_writer)
+            return proxy_writer
+        else:
+            writer = self._file_opener.dnaio_open(file, mode="w", qualities=self._qualities, interleaved=interleaved)
+            self._writers["fake\0path"] = writer
+            return writer
+
     def binary_files(self):
         return list(self._binary_files.values())
 
-    def proxy_files(self) -> List[Union[ProxyTextFile, ProxyRecordWriter]]:
+    def proxy_files(self) -> List[ProxyWriter]:
         return self._proxy_files
 
     def __iter__(self):
@@ -273,15 +280,14 @@ class OutputFiles:
     def close(self) -> None:
         """Close all output files that are not stdout"""
         # TODO ... that *are not* stdout
-        if self._proxied:
-            for f in self._binary_files.values():
-                f.close()
-        else:
+        if not self._proxied:
             for f in self._text_files.values():
                 f.close()
             for f in self._writers.values():
                 f.close()
-                f._file.close()  # FIXME
+        for f in self._binary_files.values():
+            if f is not sys.stdout.buffer:
+                f.close()
 
 
 class FileFormat(Enum):
