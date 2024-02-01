@@ -675,7 +675,9 @@ def make_pipeline_from_args(  # noqa: C901
     if paired:
         pair_filter_mode = "any" if args.pair_filter is None else args.pair_filter
 
-    def make_filter(predicate1, predicate2, path1, path2):
+    def make_filter(
+        predicate1, predicate2, path1, path2, pair_filter_mode=pair_filter_mode
+    ):
         record_writer = None
         if path1 or path2:
             paths = [path1, path2] if paired else [path1]
@@ -890,10 +892,17 @@ def make_pipeline_from_args(  # noqa: C901
         """
 
     else:
-
-        # TODO??
-        # Some special handling to allow overriding the wrapper for
-        # --discard-untrimmed/--untrimmed-(paired-)output
+        # When adapters are being trimmed only in R1 or R2, override the pair filter mode
+        # as using the default of 'any' would regard all read pairs as untrimmed.
+        override_pair_filter_mode = (
+            paired
+            and (not adapters2 or not adapters)
+            and (
+                args.discard_untrimmed
+                or args.untrimmed_output
+                or args.untrimmed_paired_output
+            )
+        )
 
         # Set up the remaining filters to deal with --discard-trimmed,
         # --discard-untrimmed and --untrimmed-output. These options
@@ -912,7 +921,12 @@ def make_pipeline_from_args(  # noqa: C901
             predicate = DiscardUntrimmed()
             if paired:
                 step = PairedEndFilter(
-                    predicate, predicate, writer=None, pair_filter_mode=pair_filter_mode
+                    predicate,
+                    predicate,
+                    writer=None,
+                    pair_filter_mode="both"
+                    if override_pair_filter_mode
+                    else pair_filter_mode,
                 )
             else:
                 step = SingleEndFilter(predicate, None)
@@ -926,13 +940,22 @@ def make_pipeline_from_args(  # noqa: C901
                     predicate2 if paired else None,
                     args.untrimmed_output,
                     args.untrimmed_paired_output,
+                    pair_filter_mode="both"
+                    if override_pair_filter_mode
+                    else pair_filter_mode,
                 )
             )
 
         if paired:
+            paths = [args.output, args.paired_output]
+            if args.paired_output is None:
+                interleaved = True
+                paths = paths[:1]
+            else:
+                interleaved = False
             steps.append(
                 PairedEndSink(
-                    outfiles.open_record_writer(args.output, args.paired_output)
+                    outfiles.open_record_writer(*paths, interleaved=interleaved)
                 )
             )
         else:
@@ -1019,23 +1042,6 @@ def make_pipeline_from_args(  # noqa: C901
         )  # type: Any
     else:
         pipeline = SingleEndPipeline(modifiers, steps)
-
-    # When adapters are being trimmed only in R1 or R2, override the pair filter mode
-    # as using the default of 'any' would regard all read pairs as untrimmed.
-    if (
-        isinstance(pipeline, PairedEndPipeline)
-        and (not adapters2 or not adapters)
-        and (
-            args.discard_untrimmed
-            or args.untrimmed_output
-            or args.untrimmed_paired_output
-        )
-    ):
-        pipeline.override_untrimmed_pair_filter = True
-
-    # Set filtering parameters
-    pipeline.discard_trimmed = args.discard_trimmed
-    pipeline.discard_untrimmed = args.discard_untrimmed
 
     return pipeline
 
