@@ -18,7 +18,7 @@ Steps are added to the pipeline in a certain order:
 """
 import itertools
 from abc import ABC, abstractmethod
-from typing import Tuple, Dict, Optional, Any, TextIO, Sequence, List
+from typing import Tuple, Optional, Any, TextIO, Sequence, List
 
 from dnaio import SequenceRecord
 
@@ -124,7 +124,6 @@ class PairedEndFilter(PairedEndStep, HasFilterStatistics):
             'both': The pair is discarded if both reads match.
             'first': The pair is discarded if the first read matches.
         """
-        super().__init__()
         if pair_filter_mode not in ("any", "both", "first"):
             raise ValueError("pair_filter_mode must be 'any', 'both' or 'first'")
         self._pair_filter_mode = pair_filter_mode
@@ -414,13 +413,13 @@ class PairedDemultiplexer(PairedEndStep, HasStatistics, HasFilterStatistics):
         self,
         adapter_names: Sequence[str],
         template1: str,
-        template2: Optional[str],
+        template2: str,
         untrimmed_output: Optional[str],
         untrimmed_paired_output: Optional[str],
         discard_untrimmed: bool,
         outfiles: OutputFiles,
     ):
-        self._writers = self._open_writers(
+        self._writers, self._untrimmed_writer = self._open_writers(
             adapter_names,
             template1,
             template2,
@@ -429,7 +428,6 @@ class PairedDemultiplexer(PairedEndStep, HasStatistics, HasFilterStatistics):
             discard_untrimmed,
             outfiles,
         )
-        self._untrimmed_writer = self._writers.get(None, None)
         self._statistics = ReadLengthStatistics()
         self._filtered = 0
 
@@ -437,41 +435,32 @@ class PairedDemultiplexer(PairedEndStep, HasStatistics, HasFilterStatistics):
     def _open_writers(
         adapter_names: Sequence[str],
         template1: str,
-        template2: Optional[str],
+        template2: str,
         untrimmed_output: Optional[str],
         untrimmed_paired_output: Optional[str],
         discard_untrimmed: bool,
         outfiles: OutputFiles,
     ):
         demultiplex_out = dict()
-        demultiplex_out2: Optional[Dict[str, Any]] = (
-            dict() if template2 is not None else None
-        )
         for name in adapter_names:
             path1 = template1.replace("{name}", name)
-            demultiplex_out[name] = file_opener.xopen(path1, "wb")
-            if demultiplex_out2 is not None:
-                assert template2 is not None
-                path2 = template2.replace("{name}", name)
-                demultiplex_out2[name] = file_opener.xopen(path2, "wb")
-        untrimmed_path: Optional[str] = template1.replace("{name}", "unknown")
-        if untrimmed_output:
-            untrimmed_path = untrimmed_output
+            path2 = template2.replace("{name}", name)
+            demultiplex_out[name] = outfiles.open_record_writer(path1, path2)
+
         if discard_untrimmed:
             untrimmed = None
         else:
-            untrimmed = file_opener.xopen(untrimmed_path, "wb")
-        if template2 is not None:
-            untrimmed2_path = template2.replace("{name}", "unknown")
-            if untrimmed_paired_output:
-                untrimmed2_path = untrimmed_paired_output
-            if discard_untrimmed:
-                untrimmed2 = None
+            if untrimmed_output is not None:
+                untrimmed_path1 = untrimmed_output
             else:
-                untrimmed2 = file_opener.xopen(untrimmed2_path, "wb")
-        else:
-            untrimmed2 = None
-        return demultiplex_out, demultiplex_out2, untrimmed, untrimmed2
+                untrimmed_path1 = template1.replace("{name}", "unknown")
+            if untrimmed_paired_output is not None:
+                untrimmed_path2 = untrimmed_paired_output
+            else:
+                untrimmed_path2 = template2.replace("{name}", "unknown")
+            untrimmed = outfiles.open_record_writer(untrimmed_path1, untrimmed_path2)
+
+        return demultiplex_out, untrimmed
 
     def __call__(
         self, read1, read2, info1: ModificationInfo, info2: ModificationInfo
@@ -509,8 +498,8 @@ class CombinatorialDemultiplexer(PairedEndStep, HasStatistics):
         self,
         adapter_names,
         adapter_names2,
-        output_template: str,
-        paired_output_template: str,
+        template1: str,
+        template2: str,
         discard_untrimmed: bool,
         outfiles: OutputFiles,
     ):
@@ -523,8 +512,8 @@ class CombinatorialDemultiplexer(PairedEndStep, HasStatistics):
         self._writers = self._open_writers(
             adapter_names,
             adapter_names2,
-            output_template,
-            paired_output_template,
+            template1,
+            template2,
             discard_untrimmed,
             outfiles,
         )
@@ -534,13 +523,12 @@ class CombinatorialDemultiplexer(PairedEndStep, HasStatistics):
     def _open_writers(
         adapter_names: Sequence[str],
         adapter_names2: Sequence[str],
-        output_template: str,
-        paired_output_template: str,
+        template1: str,
+        template2: str,
         discard_untrimmed: bool,
         outfiles: OutputFiles,
     ):
-        combinatorial_out = dict()
-        combinatorial_out2 = dict()
+        writers = dict()
         extra: List[Tuple[Optional[str], Optional[str]]]
         if discard_untrimmed:
             extra = []
@@ -553,15 +541,11 @@ class CombinatorialDemultiplexer(PairedEndStep, HasStatistics):
         ):  # type: ignore
             fname1 = name1 if name1 is not None else "unknown"
             fname2 = name2 if name2 is not None else "unknown"
-            path1 = output_template.replace("{name1}", fname1).replace(
-                "{name2}", fname2
-            )
-            path2 = paired_output_template.replace("{name1}", fname1).replace(
-                "{name2}", fname2
-            )
-            combinatorial_out[(name1, name2)] = file_opener.xopen(path1, "wb")
-            combinatorial_out2[(name1, name2)] = file_opener.xopen(path2, "wb")
-        return combinatorial_out, combinatorial_out2
+            path1 = template1.replace("{name1}", fname1).replace("{name2}", fname2)
+            path2 = template2.replace("{name1}", fname1).replace("{name2}", fname2)
+            writers[(name1, name2)] = outfiles.open_record_writer(path1, path2)
+
+        return writers
 
     def __call__(self, read1, read2, info1, info2) -> Optional[RecordPair]:
         """

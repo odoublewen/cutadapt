@@ -61,7 +61,7 @@ import platform
 import itertools
 import multiprocessing
 from pathlib import Path
-from typing import Tuple, Optional, Sequence, List, Any, Iterator, Union, Dict, Iterable
+from typing import Tuple, Optional, Sequence, List, Any, Iterator, Union, Dict
 from argparse import ArgumentParser, SUPPRESS, HelpFormatter
 
 import dnaio
@@ -871,26 +871,6 @@ def make_pipeline_from_args(  # noqa: C901
             outfiles=outfiles,
         )
         steps.append(step)
-        """
-        def _create_demultiplexer(self, outfiles) -> Union[PairedDemultiplexer, CombinatorialDemultiplexer]:
-            def open_writer(file, file2):
-                return self._open_writer(file, file2, force_fasta=outfiles.force_fasta)
-
-            if outfiles.combinatorial_out is not None:
-                assert outfiles.untrimmed is None and outfiles.untrimmed2 is None
-                writers = dict()
-                for key, out in outfiles.combinatorial_out.items():
-                    writers[key] = open_writer(out, outfiles.combinatorial_out2[key])
-                return CombinatorialDemultiplexer(writers)
-            else:
-                writers = dict()
-                if outfiles.untrimmed is not None:
-                    writers[None] = open_writer(outfiles.untrimmed, outfiles.untrimmed2)
-                for name, file in outfiles.demultiplex_out.items():
-                    writers[name] = open_writer(file, outfiles.demultiplex_out2[name])
-                return PairedDemultiplexer(writers)
-        """
-
     else:
         # When adapters are being trimmed only in R1 or R2, override the pair filter mode
         # as using the default of 'any' would regard all read pairs as untrimmed.

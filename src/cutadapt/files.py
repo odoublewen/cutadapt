@@ -1,9 +1,9 @@
 import errno
 import io
 import sys
-from abc import ABC
+from abc import ABC, abstractmethod
 from enum import Enum
-from typing import BinaryIO, Optional, Dict, Tuple, List, TextIO, Union
+from typing import BinaryIO, Optional, Dict, List, TextIO, Any
 
 import dnaio
 from xopen import xopen
@@ -143,6 +143,7 @@ class InputPaths:
 
 
 class ProxyWriter(ABC):
+    @abstractmethod
     def drain(self) -> List[bytes]:
         pass
 
@@ -212,7 +213,7 @@ class OutputFiles:
         self._writers: Dict = {}
         self._proxy_files: List[ProxyWriter] = []
         self._proxied = proxied
-        self._to_close = []
+        self._to_close: List[BinaryIO] = []
         self._qualities = qualities
         self._interleaved = interleaved
 
@@ -235,7 +236,9 @@ class OutputFiles:
     def open_record_writer(
         self, *paths, interleaved: bool = False, force_fasta: bool = False
     ):
-        kwargs = dict(qualities=self._qualities, interleaved=interleaved)
+        kwargs: Dict[str, Any] = dict(
+            qualities=self._qualities, interleaved=interleaved
+        )
         if len(paths) not in (1, 2):
             raise ValueError("Expected one or two paths")
         if interleaved and len(paths) != 1:
@@ -265,7 +268,9 @@ class OutputFiles:
         self, file: BinaryIO, interleaved: bool = False, force_fasta: bool = False
     ):
         self._binary_files.append(file)
-        kwargs = dict(qualities=self._qualities, interleaved=interleaved)
+        kwargs: Dict[str, Any] = dict(
+            qualities=self._qualities, interleaved=interleaved
+        )
         if force_fasta and file is sys.stdout.buffer:
             kwargs["fileformat"] = "fasta"
         if self._proxied:
@@ -290,9 +295,9 @@ class OutputFiles:
                 f.close()
             for f in self._writers.values():
                 f.close()
-        for f in self._binary_files:
-            if f is not sys.stdout.buffer:
-                f.close()
+        for bf in self._binary_files:
+            if bf is not sys.stdout.buffer:
+                bf.close()
 
 
 class FileFormat(Enum):

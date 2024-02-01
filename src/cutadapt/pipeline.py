@@ -1,16 +1,7 @@
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import (
-    List,
-    Optional,
-    Any,
-    Tuple,
-    Dict,
-    Union,
-    TextIO,
-    BinaryIO,
-)
+from typing import List, Optional, Any, Tuple, Union, TextIO, BinaryIO
 
 import dnaio
 
@@ -22,21 +13,8 @@ from .modifiers import (
     PairedEndModifierWrapper,
     ModificationInfo,
 )
-from .predicates import (
-    DiscardUntrimmed,
-    Predicate,
-    DiscardTrimmed,
-)
-from .steps import (
-    SingleEndSink,
-    PairedEndSink,
-    SingleEndFilter,
-    PairedEndFilter,
-    Demultiplexer,
-    PairedDemultiplexer,
-    CombinatorialDemultiplexer,
-    SingleEndStep,
-)
+from .predicates import DiscardUntrimmed, Predicate
+from .steps import PairedEndSink, PairedEndFilter, SingleEndStep
 
 logger = logging.getLogger()
 
