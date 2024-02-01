@@ -675,6 +675,24 @@ def make_pipeline_from_args(  # noqa: C901
     if paired:
         pair_filter_mode = "any" if args.pair_filter is None else args.pair_filter
 
+    def make_filter(predicate1, predicate2, path1, path2):
+        record_writer = None
+        if path1 or path2:
+            paths = [path1, path2] if paired else [path1]
+            if paired and path2 is None:
+                interleaved = True
+                paths = paths[:1]
+            else:
+                interleaved = False
+            record_writer = outfiles.open_record_writer(*paths, interleaved=interleaved)
+        if paired:
+            step = PairedEndFilter(
+                predicate1, predicate2, record_writer, pair_filter_mode=pair_filter_mode
+            )
+        else:
+            step = SingleEndFilter(predicate1, record_writer)
+        return step
+
     adapter_names: List[Optional[str]] = [a.name for a in adapters]
     adapter_names2: List[Optional[str]] = [a.name for a in adapters2]
 
@@ -737,25 +755,7 @@ def make_pipeline_from_args(  # noqa: C901
         else:
             predicate2 = None
 
-        record_writer = None
-        if path1 or path2:
-            paths = [path1, path2] if paired else [path1]
-            if paired and path2 is None:
-                interleaved = True
-                paths = paths[:1]
-            else:
-                interleaved = False
-            FIXME
-            if path1:
-                record_writer = outfiles.open_record_writer(*paths)
-
-        if paired:
-            step = PairedEndFilter(
-                predicate1, predicate2, record_writer, pair_filter_mode=pair_filter_mode
-            )
-        else:
-            step = SingleEndFilter(predicate1, record_writer)
-        steps.append(step)
+        steps.append(make_filter(predicate1, predicate2, path1, path2))
 
     if args.max_n is not None:
         predicate = TooManyN(args.max_n)
@@ -918,11 +918,16 @@ def make_pipeline_from_args(  # noqa: C901
                 step = SingleEndFilter(predicate, None)
             steps.append(step)
         elif args.untrimmed_output or args.untrimmed_paired_output:
-            files = [outfiles.untrimmed]
-            if paired:
-                files += [outfiles.untrimmed2]
-            untrimmed_writer = self._open_writer(*files)
-            steps.append(self._make_untrimmed_filter(untrimmed_writer))
+            predicate1 = DiscardUntrimmed()
+            predicate2 = DiscardUntrimmed()
+            steps.append(
+                make_filter(
+                    predicate1,
+                    predicate2 if paired else None,
+                    args.untrimmed_output,
+                    args.untrimmed_paired_output,
+                )
+            )
 
         if paired:
             steps.append(
@@ -933,7 +938,9 @@ def make_pipeline_from_args(  # noqa: C901
         else:
             if args.output is None:
                 out = outfiles.open_record_writer_from_binary_io(
-                    default_outfile, interleaved=paired and args.interleaved, force_fasta=args.fasta
+                    default_outfile,
+                    interleaved=paired and args.interleaved,
+                    force_fasta=args.fasta,
                 )
             else:
                 out = outfiles.open_record_writer(args.output, force_fasta=args.fasta)

@@ -185,8 +185,7 @@ class WorkerProcess(mpctx_Process):
                 infiles = InputFiles(*files, interleaved=self._interleaved_input)
                 (n, bp1, bp2) = self._pipeline.process_reads(infiles)
                 self._pipeline.flush()
-                cur_stats = Statistics().collect(n, bp1, bp2, [], self._pipeline._steps)
-                stats += cur_stats
+                stats += Statistics().collect(n, bp1, bp2, [], [])
                 self._send_outfiles(chunk_index, n)
                 self._pipeline.close()
 
@@ -200,7 +199,7 @@ class WorkerProcess(mpctx_Process):
                 0,
                 0 if self._pipeline.paired else None,
                 [],
-                self._pipeline._static_steps,
+                self._pipeline._steps,
             )
             self._write_pipe.send(-1)
             self._write_pipe.send(stats)
@@ -441,7 +440,9 @@ class SerialPipelineRunner(PipelineRunner):
     def input_file_format(self) -> FileFormat:
         detected = detect_file_format(self._infiles._files[0])
         if detected is None:
-            raise dnaio.exceptions.UnknownFileFormat(f"Format of input file '{self._infiles._files[0].name}' not recognized.")
+            raise dnaio.exceptions.UnknownFileFormat(
+                f"Format of input file '{self._infiles._files[0].name}' not recognized."
+            )
         return detected
 
 

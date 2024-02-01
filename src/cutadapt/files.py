@@ -206,8 +206,8 @@ class OutputFiles:
         interleaved: bool,
     ):
         self._file_opener = file_opener
+        self._binary_files: List[BinaryIO] = []
         # TODO do these actually have to be dicts?
-        self._binary_files: Dict[str, BinaryIO] = {}
         self._text_files: Dict[str, TextIO] = {}
         self._writers: Dict = {}
         self._proxy_files: List[ProxyWriter] = []
@@ -217,14 +217,13 @@ class OutputFiles:
         self._interleaved = interleaved
 
     def open_text(self, path):
-        assert path not in self._binary_files  # TODO
         # TODO
         # - serial runner needs only text_file
         # - parallel runner needs binary_file and proxy_file
         # split into SerialOutputFiles and ParallelOutputFiles?
         if self._proxied:
             binary_file = self._file_opener.xopen(path, "wb")
-            self._binary_files[path] = binary_file
+            self._binary_files.append(binary_file)
             proxy_file = ProxyTextFile()
             self._proxy_files.append(proxy_file)
             return proxy_file
@@ -233,23 +232,26 @@ class OutputFiles:
             self._text_files[path] = text_file
             return text_file
 
-    def open_record_writer(self, *paths, force_fasta: bool = False):
-        kwargs = dict(qualities=self._qualities)
+    def open_record_writer(
+        self, *paths, interleaved: bool = False, force_fasta: bool = False
+    ):
+        kwargs = dict(qualities=self._qualities, interleaved=interleaved)
         if len(paths) not in (1, 2):
             raise ValueError("Expected one or two paths")
-        if len(paths) == 2 and paths[1] is None:
-            paths = paths[:1]
-            kwargs["interleaved"] = True
+        if interleaved and len(paths) != 1:
+            raise ValueError("Cannot write to two files when interleaved is True")
+        # if len(paths) == 2 and paths[1] is None:
+        #     paths = paths[:1]
+        #     kwargs["interleaved"] = True
         if len(paths) == 1 and paths[0] == "-" and force_fasta:
             kwargs["fileformat"] = "fasta"
         for path in paths:
             assert path is not None
-            assert path not in self._binary_files  # TODO
         binary_files = []
         for path in paths:
             binary_file = self._file_opener.xopen(path, "wb")
             binary_files.append(binary_file)
-            self._binary_files[path] = binary_file
+            self._binary_files.append(binary_file)
         if self._proxied:
             proxy_writer = ProxyRecordWriter(len(paths), **kwargs)
             self._proxy_files.append(proxy_writer)
@@ -259,42 +261,36 @@ class OutputFiles:
             self._writers[paths] = writer
             return writer
 
-    def open_record_writer_from_binary_io(self, file: BinaryIO, interleaved: bool = False, force_fasta: bool = False):
-        self._binary_files["fake\0path"] = file  # TODO
+    def open_record_writer_from_binary_io(
+        self, file: BinaryIO, interleaved: bool = False, force_fasta: bool = False
+    ):
+        self._binary_files.append(file)
         kwargs = dict(qualities=self._qualities, interleaved=interleaved)
         if force_fasta and file is sys.stdout.buffer:
             kwargs["fileformat"] = "fasta"
         if self._proxied:
-            proxy_writer = ProxyRecordWriter(
-                1, **kwargs
-            )
+            proxy_writer = ProxyRecordWriter(1, **kwargs)
             self._proxy_files.append(proxy_writer)
             return proxy_writer
         else:
-            writer = self._file_opener.dnaio_open(
-                file, mode="w", **kwargs
-            )
+            writer = self._file_opener.dnaio_open(file, mode="w", **kwargs)
             self._writers["fake\0path"] = writer
             return writer
 
     def binary_files(self):
-        return list(self._binary_files.values())
+        return self._binary_files[:]
 
     def proxy_files(self) -> List[ProxyWriter]:
         return self._proxy_files
 
-    def __iter__(self):
-        yield from self._binary_files.values()
-
     def close(self) -> None:
         """Close all output files that are not stdout"""
-        # TODO ... that *are not* stdout
         if not self._proxied:
             for f in self._text_files.values():
                 f.close()
             for f in self._writers.values():
                 f.close()
-        for f in self._binary_files.values():
+        for f in self._binary_files:
             if f is not sys.stdout.buffer:
                 f.close()
 

@@ -125,7 +125,7 @@ class TestOutputFiles:
             interleaved=True,
         )
         path = tmp_path / "out.1.fastq"
-        f = o.open_record_writer(path, None)
+        f = o.open_record_writer(path, interleaved=True)
         f.write(
             SequenceRecord("r", "AACC", "####"), SequenceRecord("r", "GGTT", "####")
         )
