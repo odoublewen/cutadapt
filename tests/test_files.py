@@ -1,7 +1,7 @@
 import os
 import pickle
 
-from cutadapt.files import ProxyTextFile, ProxyRecordWriter
+from cutadapt.files import ProxyTextFile, ProxyRecordWriter, FileOpener, OutputFiles
 from dnaio import SequenceRecord
 
 
@@ -68,3 +68,32 @@ def test_proxy_record_writer_picklable():
     unpickled = pickle.loads(pickled)
     assert isinstance(unpickled, ProxyRecordWriter)
     assert unpickled._n_files == 2
+
+
+class TestOutputFiles:
+    def setup_method(self):
+        self.file_opener = FileOpener()
+
+    def test_open_text(self, tmp_path):
+        o = OutputFiles(file_opener=self.file_opener, proxied=False, qualities=False, interleaved=False)
+        path = tmp_path / "out.txt"
+        f = o.open_text(path)
+        print("Hello", file=f)
+        o.close()
+        assert path.read_text() == "Hello\n"
+
+    def test_open_record_writer(self, tmp_path):
+        o = OutputFiles(file_opener=self.file_opener, proxied=False, qualities=True, interleaved=False)
+        path = tmp_path / "out.fastq"
+        f = o.open_record_writer(path)
+        f.write(SequenceRecord("r", "ACGT", "####"))
+        o.close()
+        assert path.read_text() == "@r\nACGT\n+\n####\n"
+
+    # - paired record writer
+    # - interleaved record writer
+    # - test force fasta
+    # - test qualities
+    # - test proxied
+    # - test opening a BinaryIO file
+    # - test complaint about duplicate file names

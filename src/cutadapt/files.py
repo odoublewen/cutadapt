@@ -196,10 +196,18 @@ class OutputFiles:
         *,
         file_opener: FileOpener,
         proxied: bool,
-        force_fasta: Optional[bool] = None,
         qualities: bool,
         interleaved: bool,
     ):
+        """
+
+        Args:
+            file_opener:
+            proxied:
+            force_fasta:
+            qualities:
+            interleaved:
+        """
         self._file_opener = file_opener
         # TODO do these actually have to be dicts?
         self._binary_files: Dict[str, BinaryIO] = {}
@@ -207,7 +215,6 @@ class OutputFiles:
         self._writers: Dict = {}
         self._proxy_files: List[Union[ProxyTextFile, ProxyRecordWriter]] = []
         self._proxied = proxied
-        self.force_fasta = force_fasta
         self._qualities = qualities
         self._interleaved = interleaved
 
@@ -230,8 +237,7 @@ class OutputFiles:
 
     def open_record_writer(self, *paths):
         kwargs = dict(
-            qualities=self._qualities,
-            fileformat="fasta" if self.force_fasta else None,
+            qualities=self._qualities
         )
         if len(paths) not in (1, 2):
             raise ValueError("Expected one or two paths")
@@ -275,6 +281,7 @@ class OutputFiles:
                 f.close()
             for f in self._writers.values():
                 f.close()
+                f._file.close()  # FIXME
 
 
 class FileFormat(Enum):
@@ -304,3 +311,4 @@ def detect_file_format(file: BinaryIO) -> Optional[FileFormat]:
     elif magic == b"BAM\1":
         return FileFormat.BAM
     return None
+
