@@ -98,7 +98,9 @@ from cutadapt.predicates import (
     TooManyN,
     TooManyExpectedErrors,
     TooHighAverageErrorRate,
-    CasavaFiltered, DiscardTrimmed, DiscardUntrimmed,
+    CasavaFiltered,
+    DiscardTrimmed,
+    DiscardUntrimmed,
 )
 from cutadapt.report import full_report, minimal_report, Statistics
 from cutadapt.pipeline import SingleEndPipeline, PairedEndPipeline
@@ -112,7 +114,10 @@ from cutadapt.steps import (
     SingleEndFilter,
     PairedEndFilter,
     Demultiplexer,
-    CombinatorialDemultiplexer, PairedDemultiplexer, PairedEndSink, SingleEndSink,
+    CombinatorialDemultiplexer,
+    PairedDemultiplexer,
+    PairedEndSink,
+    SingleEndSink,
 )
 from cutadapt.utils import available_cpu_count, Progress, DummyProgress
 from cutadapt.log import setup_logging, REPORT
@@ -830,7 +835,9 @@ def make_pipeline_from_args(  # noqa: C901
     if demultiplex_mode == "normal":
         if paired:
             step = PairedDemultiplexer(
-                adapter_names, adapter_names2, template1=args.output, template2=args.paired_output,
+                adapter_names,
+                template1=args.output,
+                template2=args.paired_output,
                 untrimmed_output=args.untrimmed_output,
                 untrimmed_paired_output=args.untrimmed_paired_output,
                 discard_untrimmed=args.discard_untrimmed,
@@ -890,7 +897,7 @@ def make_pipeline_from_args(  # noqa: C901
 
         # Set up the remaining filters to deal with --discard-trimmed,
         # --discard-untrimmed and --untrimmed-output. These options
-        # are mutually exclusive in order to avoid brain damage.
+        # are mutually exclusive to help prevent brain damage.
         if args.discard_trimmed:
             predicate = DiscardTrimmed()
             if paired:
@@ -918,12 +925,18 @@ def make_pipeline_from_args(  # noqa: C901
             steps.append(self._make_untrimmed_filter(untrimmed_writer))
 
         if paired:
-            steps.append(PairedEndSink(outfiles.open_record_writer(args.output, args.paired_output)))
+            steps.append(
+                PairedEndSink(
+                    outfiles.open_record_writer(args.output, args.paired_output)
+                )
+            )
         else:
             if args.output is None:
-                out = outfiles.open_record_writer_from_binary_io(default_outfile, interleaved=paired and args.interleaved)
+                out = outfiles.open_record_writer_from_binary_io(
+                    default_outfile, interleaved=paired and args.interleaved, force_fasta=args.fasta
+                )
             else:
-                out = outfiles.open_record_writer(args.output)
+                out = outfiles.open_record_writer(args.output, force_fasta=args.fasta)
             steps.append(SingleEndSink(out))
 
             # untrimmed, untrimmed2 = file_opener.xopen_pair(
@@ -1228,7 +1241,13 @@ def main(cmdlineargs, default_outfile=sys.stdout.buffer) -> Statistics:
         log_adapters(adapters, adapters2 if paired else None)
 
         with make_runner(input_paths, cores, args.buffer_size) as runner:
-            outfiles = open_output_files(args, file_opener, proxied=cores > 1, input_file_format=runner.input_file_format(), interleaved=args.interleaved)
+            outfiles = open_output_files(
+                args,
+                file_opener,
+                proxied=cores > 1,
+                input_file_format=runner.input_file_format(),
+                interleaved=args.interleaved,
+            )
             pipeline = make_pipeline_from_args(
                 args,
                 runner.input_file_format(),

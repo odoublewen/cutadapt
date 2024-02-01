@@ -233,13 +233,15 @@ class OutputFiles:
             self._text_files[path] = text_file
             return text_file
 
-    def open_record_writer(self, *paths):
+    def open_record_writer(self, *paths, force_fasta: bool = False):
         kwargs = dict(qualities=self._qualities)
         if len(paths) not in (1, 2):
             raise ValueError("Expected one or two paths")
         if len(paths) == 2 and paths[1] is None:
             paths = paths[:1]
             kwargs["interleaved"] = True
+        if len(paths) == 1 and paths[0] == "-" and force_fasta:
+            kwargs["fileformat"] = "fasta"
         for path in paths:
             assert path is not None
             assert path not in self._binary_files  # TODO
@@ -257,14 +259,21 @@ class OutputFiles:
             self._writers[paths] = writer
             return writer
 
-    def open_record_writer_from_binary_io(self, file: BinaryIO, interleaved: bool):
+    def open_record_writer_from_binary_io(self, file: BinaryIO, interleaved: bool = False, force_fasta: bool = False):
         self._binary_files["fake\0path"] = file  # TODO
+        kwargs = dict(qualities=self._qualities, interleaved=interleaved)
+        if force_fasta and file is sys.stdout.buffer:
+            kwargs["fileformat"] = "fasta"
         if self._proxied:
-            proxy_writer = ProxyRecordWriter(1, qualities=self._qualities, interleaved=interleaved)
+            proxy_writer = ProxyRecordWriter(
+                1, **kwargs
+            )
             self._proxy_files.append(proxy_writer)
             return proxy_writer
         else:
-            writer = self._file_opener.dnaio_open(file, mode="w", qualities=self._qualities, interleaved=interleaved)
+            writer = self._file_opener.dnaio_open(
+                file, mode="w", **kwargs
+            )
             self._writers["fake\0path"] = writer
             return writer
 
@@ -317,4 +326,3 @@ def detect_file_format(file: BinaryIO) -> Optional[FileFormat]:
     elif magic == b"BAM\1":
         return FileFormat.BAM
     return None
-

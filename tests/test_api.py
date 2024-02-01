@@ -12,8 +12,14 @@ import os
 
 from cutadapt.predicates import TooShort, DiscardUntrimmed
 from cutadapt.runners import make_runner
-from cutadapt.steps import InfoFileWriter, PairedSingleEndStep, SingleEndSink, SingleEndFilter, \
-    PairedEndFilter, PairedEndSink
+from cutadapt.steps import (
+    InfoFileWriter,
+    PairedSingleEndStep,
+    SingleEndSink,
+    SingleEndFilter,
+    PairedEndFilter,
+    PairedEndSink,
+)
 from cutadapt.utils import DummyProgress
 from utils import datapath
 
@@ -62,14 +68,17 @@ def test_pipeline_single(tmp_path, cores):
     ]
     inpaths = InputPaths(datapath("small.fastq"))
     with make_runner(inpaths, cores) as runner:
-        outfiles = OutputFiles(file_opener=file_opener, proxied=cores > 1,
-            qualities=runner.input_file_format().has_qualities(), interleaved=False
+        outfiles = OutputFiles(
+            file_opener=file_opener,
+            proxied=cores > 1,
+            qualities=runner.input_file_format().has_qualities(),
+            interleaved=False,
         )
         steps = [
             InfoFileWriter(outfiles.open_text(info_path)),
             SingleEndFilter(TooShort(10), writer=None),
             SingleEndFilter(DiscardUntrimmed(), writer=None),
-            SingleEndSink(outfiles.open_record_writer(tmp_path / "out.fastq"))
+            SingleEndSink(outfiles.open_record_writer(tmp_path / "out.fastq")),
         ]
         pipeline = SingleEndPipeline(modifiers, steps)
         stats = runner.run(pipeline, DummyProgress(), outfiles)
@@ -111,13 +120,22 @@ def test_pipeline_paired(tmp_path, cores):
             file_opener=file_opener,
             proxied=cores > 1,
             qualities=runner.input_file_format().has_qualities(),
-            interleaved=False
+            interleaved=False,
         )
         steps = [
             PairedSingleEndStep(InfoFileWriter(outfiles.open_text(info_path))),
             PairedEndFilter(TooShort(10), None, writer=None),
-            PairedEndFilter(DiscardUntrimmed(), DiscardUntrimmed(), writer=None, pair_filter_mode="any"),
-            PairedEndSink(outfiles.open_record_writer(tmp_path / "out.1.fastq", tmp_path / "out.2.fastq"))
+            PairedEndFilter(
+                DiscardUntrimmed(),
+                DiscardUntrimmed(),
+                writer=None,
+                pair_filter_mode="any",
+            ),
+            PairedEndSink(
+                outfiles.open_record_writer(
+                    tmp_path / "out.1.fastq", tmp_path / "out.2.fastq"
+                )
+            ),
         ]
         pipeline = PairedEndPipeline(
             runner.input_file_format(), modifiers, "any", steps

@@ -16,8 +16,9 @@ Steps are added to the pipeline in a certain order:
 3. The last pipeline step should be one of the "Sinks", which consume all reads.
    Demultiplexers are sinks, for example.
 """
+import itertools
 from abc import ABC, abstractmethod
-from typing import Tuple, Dict, Optional, Any, TextIO, Sequence
+from typing import Tuple, Dict, Optional, Any, TextIO, Sequence, List
 
 from dnaio import SequenceRecord
 
@@ -417,9 +418,17 @@ class PairedDemultiplexer(PairedEndStep, HasStatistics, HasFilterStatistics):
         untrimmed_output: Optional[str],
         untrimmed_paired_output: Optional[str],
         discard_untrimmed: bool,
-        file_opener,
+        outfiles: OutputFiles,
     ):
-        self._writers = self._open_writers(adapter_names, template1, template2, untrimmed_output, untrimmed_paired_output, discard_untrimmed, file_opener)
+        self._writers = self._open_writers(
+            adapter_names,
+            template1,
+            template2,
+            untrimmed_output,
+            untrimmed_paired_output,
+            discard_untrimmed,
+            outfiles,
+        )
         self._untrimmed_writer = self._writers.get(None, None)
         self._statistics = ReadLengthStatistics()
         self._filtered = 0
@@ -432,7 +441,7 @@ class PairedDemultiplexer(PairedEndStep, HasStatistics, HasFilterStatistics):
         untrimmed_output: Optional[str],
         untrimmed_paired_output: Optional[str],
         discard_untrimmed: bool,
-        file_opener,
+        outfiles: OutputFiles,
     ):
         demultiplex_out = dict()
         demultiplex_out2: Optional[Dict[str, Any]] = (

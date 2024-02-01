@@ -17,7 +17,8 @@ from cutadapt.files import (
     InputPaths,
     xopen_rb_raise_limit,
     detect_file_format,
-    FileFormat, ProxyWriter,
+    FileFormat,
+    ProxyWriter,
 )
 from cutadapt.pipeline import Pipeline
 from cutadapt.report import Statistics
@@ -95,8 +96,9 @@ class ReaderProcess(mpctx_Process):
                 ]
                 file_format = detect_file_format(files[0])
                 self._file_format_connection.send(file_format)
-                for index, chunks in enumerate(self._read_chunks(*files)):
-                    self.send_to_worker(index, *chunks)
+                if file_format is not None:
+                    for index, chunks in enumerate(self._read_chunks(*files)):
+                        self.send_to_worker(index, *chunks)
             self.shutdown()
         except Exception as e:
             # TODO better send this to a common "something went wrong" Queue
@@ -255,7 +257,7 @@ class PipelineRunner(ABC):
         pass
 
     @abstractmethod
-    def input_file_format(self) -> Optional[FileFormat]:
+    def input_file_format(self) -> FileFormat:
         pass
 
     def __enter__(self):
@@ -321,7 +323,9 @@ class ParallelPipelineRunner(PipelineRunner):
         self._reader_process.start()
         file_format: Optional[FileFormat] = file_format_connection_r.recv()
         if file_format is None:
-            raise dnaio.exceptions.UnknownFileFormat(self._inpaths.paths[0])
+            raise dnaio.exceptions.UnknownFileFormat(
+                f"Format of input file '{self._inpaths.paths[0]}' not recognized."
+            )
         self._input_file_format = file_format
 
     def _start_workers(
@@ -434,8 +438,10 @@ class SerialPipelineRunner(PipelineRunner):
     def close(self):
         self._infiles.close()
 
-    def input_file_format(self) -> Optional[FileFormat]:
+    def input_file_format(self) -> FileFormat:
         detected = detect_file_format(self._infiles._files[0])
+        if detected is None:
+            raise dnaio.exceptions.UnknownFileFormat(f"Format of input file '{self._infiles._files[0].name}' not recognized.")
         return detected
 
 
